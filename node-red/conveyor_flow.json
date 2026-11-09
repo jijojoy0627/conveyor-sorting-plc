@@ -1,0 +1,408 @@
+[
+  {
+    "id": "cv_flow",
+    "type": "tab",
+    "label": "Conveyor sim",
+    "disabled": false,
+    "info": ""
+  },
+  {
+    "id": "cv_tab",
+    "type": "ui_tab",
+    "name": "Conveyor",
+    "icon": "dashboard",
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "cv_g1",
+    "type": "ui_group",
+    "name": "Belt",
+    "tab": "cv_tab",
+    "order": 1,
+    "disp": true,
+    "width": "12",
+    "collapse": false
+  },
+  {
+    "id": "cv_g2",
+    "type": "ui_group",
+    "name": "Controls",
+    "tab": "cv_tab",
+    "order": 2,
+    "disp": true,
+    "width": "6",
+    "collapse": false
+  },
+  {
+    "id": "cv_g3",
+    "type": "ui_group",
+    "name": "Fault tests",
+    "tab": "cv_tab",
+    "order": 3,
+    "disp": true,
+    "width": "6",
+    "collapse": false
+  },
+  {
+    "id": "cv_comment",
+    "type": "comment",
+    "name": "Conveyor sim: wire your modbus-read -> 'Store PLC status', and 'Simulation' output 1 -> your modbus-write",
+    "info": "",
+    "x": 380,
+    "y": 40,
+    "wires": [],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_tick",
+    "type": "inject",
+    "name": "tick 100ms",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "0.1",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 130,
+    "y": 100,
+    "wires": [
+      [
+        "cv_sim"
+      ]
+    ],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_sim",
+    "type": "function",
+    "name": "Simulation",
+    "func": "const now = Date.now();\nlet st = flow.get('sim') || {boxes: [], last: now, lastWrite: 0, lastWord: -1, spawnAt: 0, chute: 0, exited: 0};\nconst plc = flow.get('plc') || {status: 0, total: 0, small: 0, tall: 0};\nconst sw = flow.get('sw') || {};\nconst pulses = flow.get('pulses') || {start: 0, stop: 0, reset: 0};\n\nconst dt = Math.min((now - st.last) / 1000, 0.5);\nst.last = now;\n\nconst motor   = (plc.status & 1) !== 0;\nconst divCmd  = (plc.status & 2) !== 0;\nconst jam     = (plc.status & 4) !== 0;\nconst divFail = (plc.status & 8) !== 0;\n\nconst SPEED = 100;      // px per second\nconst W = 30;           // box width in px\nconst ZONE_A = 100, ZONE_B = 120;   // sensor S1/S2 zone\nconst DIV_A = 300, DIV_B = 450;     // diverter zone\nconst EXIT_A = 560, EXIT_B = 580;   // exit sensor zone\nconst END = 600;\n\n// move boxes only while the PLC runs the motor\nif (motor) {\n    st.boxes.forEach(b => { b.x += SPEED * dt; });\n}\n\n// diverter: extended while the PLC commands it (unless the stuck switch is on)\nconst extended = divCmd && !sw.stuck;\nif (extended) {\n    const keep = [];\n    st.boxes.forEach(b => {\n        if (b.tall && b.x + W > DIV_A && b.x < DIV_B) { st.chute++; }\n        else { keep.push(b); }\n    });\n    st.boxes = keep;\n}\n\n// boxes leaving the end of the belt\nconst remain = [];\nst.boxes.forEach(b => { if (b.x >= END) { st.exited++; } else { remain.push(b); } });\nst.boxes = remain;\n\n// spawning (one box on the belt at a time)\nif (st.boxes.length === 0) {\n    if (st.spawnAt === 0) { st.spawnAt = now + 3000; }\n    if (motor && (sw.spawn || (sw.auto === true && now >= st.spawnAt))) {\n        st.boxes.push({x: 0, tall: Math.random() < 0.4});\n        st.spawnAt = 0;\n        sw.spawn = false;\n    }\n} else {\n    sw.spawn = false;\n}\nflow.set('sw', sw);\n\n// sensors\nconst overlap = b => (b.x < ZONE_B && b.x + W > ZONE_A);\nconst s1 = sw.block === true || st.boxes.some(overlap);\nconst s2 = st.boxes.some(b => b.tall && overlap(b));\nconst sExit = st.boxes.some(b => b.x < EXIT_B && b.x + W > EXIT_A);\n\n// build the input word for the PLC (holding register 0)\nconst word = (s1 ? 1 : 0) | (s2 ? 2 : 0) | (sExit ? 4 : 0) | (extended ? 8 : 0)\n           | (sw.estop === true ? 0 : 16)\n           | (now < pulses.start ? 32 : 0)\n           | (now < pulses.stop ? 64 : 0)\n           | (now < pulses.reset ? 128 : 0);\n\nflow.set('sim', st);\n\nlet toPlc = null;\nif (word !== st.lastWord || now - st.lastWrite > 1000) {\n    st.lastWord = word;\n    st.lastWrite = now;\n    toPlc = {payload: word};\n}\n\nconst view = {\n    payload: {\n        boxes: st.boxes.map(b => ({x: Math.round(b.x), tall: b.tall})),\n        s1: s1, s2: s2, sExit: sExit, ext: extended,\n        motor: motor, jam: jam, divFail: divFail, estop: sw.estop === true,\n        total: plc.total, small: plc.small, tall: plc.tall,\n        chute: st.chute, exited: st.exited\n    }\n};\nreturn [toPlc, view];\n",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 100,
+    "wires": [
+      [],
+      [
+        "cv_view"
+      ]
+    ],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_view",
+    "type": "ui_template",
+    "z": "cv_flow",
+    "group": "cv_g1",
+    "name": "Belt view",
+    "order": 1,
+    "width": "12",
+    "height": "4",
+    "format": "<style>\n.cv-belt{position:relative;width:600px;height:110px;background:#4a4a4a;border-radius:6px;overflow:hidden;margin:6px 0}\n.cv-zone{position:absolute;top:0;bottom:0}\n.cv-lbl{position:absolute;top:2px;font-size:10px;color:#fff}\n.cv-box{position:absolute;bottom:8px;width:30px;border:1px solid #222}\n.cv-lamp{display:inline-block;padding:2px 10px;margin:2px;border-radius:10px;color:#fff;font-size:13px}\n</style>\n<div>\n  <span class=\"cv-lamp\" ng-style=\"{background: msg.payload.motor ? '#2e7d32' : '#777'}\">RUN</span>\n  <span class=\"cv-lamp\" ng-style=\"{background: msg.payload.jam ? '#c62828' : '#777'}\">JAM</span>\n  <span class=\"cv-lamp\" ng-style=\"{background: msg.payload.divFail ? '#c62828' : '#777'}\">DIVERTER FAULT</span>\n  <span class=\"cv-lamp\" ng-style=\"{background: msg.payload.estop ? '#c62828' : '#777'}\">E-STOP</span>\n</div>\n<div class=\"cv-belt\">\n  <div class=\"cv-zone\" style=\"left:100px;width:20px\" ng-style=\"{background: msg.payload.s1 ? '#42a5f5' : '#2b3a4a'}\"></div>\n  <div class=\"cv-zone\" style=\"left:300px;width:150px\" ng-style=\"{background: msg.payload.ext ? '#ff9800' : '#3a3a2a'}\"></div>\n  <div class=\"cv-zone\" style=\"left:560px;width:20px\" ng-style=\"{background: msg.payload.sExit ? '#66bb6a' : '#2b3a2b'}\"></div>\n  <div class=\"cv-lbl\" style=\"left:90px\">S1 / S2</div>\n  <div class=\"cv-lbl\" style=\"left:340px\">DIVERTER</div>\n  <div class=\"cv-lbl\" style=\"left:552px\">EXIT</div>\n  <div class=\"cv-box\" ng-repeat=\"b in msg.payload.boxes track by $index\"\n       ng-style=\"{left: b.x + 'px', height: (b.tall ? 44 : 22) + 'px', background: (b.tall ? '#d32f2f' : '#e0a030')}\"></div>\n</div>\n<div style=\"font-size:15px\">\n  Total: <b>{{msg.payload.total}}</b> &nbsp;\n  Small: <b>{{msg.payload.small}}</b> &nbsp;\n  Tall: <b>{{msg.payload.tall}}</b> &nbsp;\n  | Pushed to chute: <b>{{msg.payload.chute}}</b> &nbsp;\n  Reached end: <b>{{msg.payload.exited}}</b>\n</div>\n",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 560,
+    "y": 100,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "cv_store",
+    "type": "function",
+    "name": "Store PLC status",
+    "func": "if (!Array.isArray(msg.payload) || msg.payload.length < 4) { return null; }\nflow.set('plc', {\n    status: msg.payload[0],\n    total: msg.payload[1],\n    small: msg.payload[2],\n    tall: msg.payload[3]\n});\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 350,
+    "y": 180,
+    "wires": [
+      []
+    ],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_ctrl",
+    "type": "function",
+    "name": "Controls",
+    "func": "const now = Date.now();\nconst t = msg.topic;\nif (t === 'start' || t === 'stop' || t === 'reset') {\n    const p = flow.get('pulses') || {start: 0, stop: 0, reset: 0};\n    p[t] = now + 400;\n    flow.set('pulses', p);\n} else if (t === 'spawn') {\n    const s = flow.get('sw') || {};\n    s.spawn = true;\n    flow.set('sw', s);\n} else {\n    const s = flow.get('sw') || {};\n    s[t] = msg.payload;\n    flow.set('sw', s);\n}\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 600,
+    "y": 380,
+    "wires": [
+      []
+    ],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_b_start",
+    "type": "ui_button",
+    "name": "START",
+    "group": "cv_g2",
+    "order": 1,
+    "width": "2",
+    "height": "1",
+    "passthru": false,
+    "label": "START",
+    "tooltip": "",
+    "color": "white",
+    "bgcolor": "#2e7d32",
+    "className": "",
+    "icon": "",
+    "payload": "1",
+    "payloadType": "str",
+    "topic": "start",
+    "topicType": "str",
+    "x": 150,
+    "y": 260,
+    "wires": [
+      [
+        "cv_ctrl"
+      ]
+    ],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_b_stop",
+    "type": "ui_button",
+    "name": "STOP",
+    "group": "cv_g2",
+    "order": 2,
+    "width": "2",
+    "height": "1",
+    "passthru": false,
+    "label": "STOP",
+    "tooltip": "",
+    "color": "white",
+    "bgcolor": "#c62828",
+    "className": "",
+    "icon": "",
+    "payload": "1",
+    "payloadType": "str",
+    "topic": "stop",
+    "topicType": "str",
+    "x": 150,
+    "y": 300,
+    "wires": [
+      [
+        "cv_ctrl"
+      ]
+    ],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_b_reset",
+    "type": "ui_button",
+    "name": "RESET",
+    "group": "cv_g2",
+    "order": 3,
+    "width": "2",
+    "height": "1",
+    "passthru": false,
+    "label": "RESET",
+    "tooltip": "",
+    "color": "white",
+    "bgcolor": "#ef6c00",
+    "className": "",
+    "icon": "",
+    "payload": "1",
+    "payloadType": "str",
+    "topic": "reset",
+    "topicType": "str",
+    "x": 150,
+    "y": 340,
+    "wires": [
+      [
+        "cv_ctrl"
+      ]
+    ],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_b_spawn",
+    "type": "ui_button",
+    "name": "SPAWN BOX",
+    "group": "cv_g2",
+    "order": 4,
+    "width": "2",
+    "height": "1",
+    "passthru": false,
+    "label": "SPAWN BOX",
+    "tooltip": "",
+    "color": "white",
+    "bgcolor": "#1565c0",
+    "className": "",
+    "icon": "",
+    "payload": "1",
+    "payloadType": "str",
+    "topic": "spawn",
+    "topicType": "str",
+    "x": 150,
+    "y": 380,
+    "wires": [
+      [
+        "cv_ctrl"
+      ]
+    ],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_s_auto",
+    "type": "ui_switch",
+    "name": "Auto spawn boxes",
+    "label": "Auto spawn boxes",
+    "tooltip": "",
+    "group": "cv_g2",
+    "order": 5,
+    "width": "6",
+    "height": "1",
+    "passthru": true,
+    "decouple": "false",
+    "topic": "auto",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 150,
+    "y": 420,
+    "wires": [
+      [
+        "cv_ctrl"
+      ]
+    ],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_s_estop",
+    "type": "ui_switch",
+    "name": "E-stop pressed",
+    "label": "E-stop pressed",
+    "tooltip": "",
+    "group": "cv_g3",
+    "order": 1,
+    "width": "6",
+    "height": "1",
+    "passthru": true,
+    "decouple": "false",
+    "topic": "estop",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 150,
+    "y": 480,
+    "wires": [
+      [
+        "cv_ctrl"
+      ]
+    ],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_s_block",
+    "type": "ui_switch",
+    "name": "Block sensor S1 (jam)",
+    "label": "Block sensor S1 (jam)",
+    "tooltip": "",
+    "group": "cv_g3",
+    "order": 2,
+    "width": "6",
+    "height": "1",
+    "passthru": true,
+    "decouple": "false",
+    "topic": "block",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 150,
+    "y": 520,
+    "wires": [
+      [
+        "cv_ctrl"
+      ]
+    ],
+    "z": "cv_flow"
+  },
+  {
+    "id": "cv_s_stuck",
+    "type": "ui_switch",
+    "name": "Diverter stuck",
+    "label": "Diverter stuck",
+    "tooltip": "",
+    "group": "cv_g3",
+    "order": 3,
+    "width": "6",
+    "height": "1",
+    "passthru": true,
+    "decouple": "false",
+    "topic": "stuck",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 150,
+    "y": 560,
+    "wires": [
+      [
+        "cv_ctrl"
+      ]
+    ],
+    "z": "cv_flow"
+  }
+]
