@@ -5,9 +5,6 @@ runs on the **CODESYS Control Win** soft PLC and talks over **Modbus TCP** to a
 **Node-RED** dashboard. The dashboard also simulates the belt, the boxes and the sensors,
 so the whole project runs on one PC with no hardware.
 
-<!-- Add a screenshot of the running dashboard here:
-![Dashboard](docs/dashboard.png)
--->
 
 ## What it does
 
